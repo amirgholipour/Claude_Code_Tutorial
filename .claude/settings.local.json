@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs -I {} basename {})",
+      "Bash(wc -l C:/Saeed/Projects/Claude_Code_Tutorial/lessons/02-ml-with-gradio/app/modules/*.py)"
+    ]
+  }
+}
