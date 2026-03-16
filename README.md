@@ -11,6 +11,7 @@ Each lesson teaches a practical workflow through guided exercises and custom sla
 | # | Topic | Status |
 |---|---|---|
 | 01 | [GitHub Repo Management](./lessons/01-github-repo-management/README.md) | Ready |
+| 02 | [Machine Learning & Deep Learning with Gradio](./lessons/02-ml-with-gradio/README.md) | Ready |
 
 ## How It Works
 
@@ -23,18 +24,26 @@ Each lesson teaches a practical workflow through guided exercises and custom sla
 
 - Git installed (`git --version`)
 - GitHub CLI installed and authenticated (`gh auth status`)
+- Python 3.9+ installed (`python --version`)
 - Claude Code installed
 
 ## Custom Slash Commands
 
-This project comes with 5 GitHub management commands (available in `.claude/commands/`):
+All commands are **project-scoped** — available when Claude Code is open in this directory.
 
+**Lesson 1 — GitHub:**
 ```
 /github-create-repo   — Create a new GitHub repo from a local directory
 /github-branch        — Create, list, or switch branches
 /github-pr            — Create, list, or merge pull requests
 /github-issue         — Create, list, or close GitHub issues
 /github-release       — Tag a version and publish a GitHub release
+```
+
+**Lesson 2 — Machine Learning:**
+```
+/ml-setup             — Install all Python dependencies for the ML app
+/ml-run-app           — Launch the ML & Deep Learning Gradio app
 ```
 
 These are **project-scoped** — they only appear when Claude Code is open in this directory.
