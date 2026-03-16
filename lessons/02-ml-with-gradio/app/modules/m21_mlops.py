@@ -211,6 +211,36 @@ def run_mlops_demo(demo_type: str, drift_level: float, n_features_monitor: int):
                           title_text=f"Data Drift — drift_level={drift_level}")
         fig.update_xaxes(tickangle=-45)
 
+        # --- Distribution overlay for top 3 most-drifted features ---
+        top3_idx = np.argsort(psi_scores)[::-1][:3]
+        top3_titles = [
+            f"{feature_names[idx][:18]} (PSI={psi_scores[idx]:.3f})"
+            for idx in top3_idx
+        ]
+        fig2 = make_subplots(rows=1, cols=3, subplot_titles=top3_titles)
+        for i, feat_idx in enumerate(top3_idx):
+            show_legend = (i == 0)
+            fig2.add_trace(
+                go.Histogram(
+                    x=X_ref[:, feat_idx], name="Reference",
+                    opacity=0.6, marker_color="blue",
+                    legendgroup="ref", showlegend=show_legend,
+                ),
+                row=1, col=i + 1,
+            )
+            fig2.add_trace(
+                go.Histogram(
+                    x=X_cur[:, feat_idx], name="Production",
+                    opacity=0.6, marker_color="red",
+                    legendgroup="prod", showlegend=show_legend,
+                ),
+                row=1, col=i + 1,
+            )
+        fig2.update_layout(
+            barmode="overlay", height=350, showlegend=True,
+            title_text="Distribution Overlay — Top 3 Drifted Features",
+        )
+
         drifted_psi = sum(1 for p in psi_scores if p >= 0.2)
         drifted_ks  = sum(1 for p in ks_pvalues if p < 0.05)
         max_psi_feat = feature_names[np.argmax(psi_scores)]
@@ -218,6 +248,16 @@ def run_mlops_demo(demo_type: str, drift_level: float, n_features_monitor: int):
         recommendation = "✅ No retrain needed" if max(psi_scores) < 0.1 else \
                          "⚠️ Monitor closely" if max(psi_scores) < 0.2 else \
                          "🔴 RETRAIN RECOMMENDED"
+
+        # Build per-feature table with PSI and KS p-values
+        feat_rows = ""
+        for i in range(n_feat):
+            psi_flag = "🔴" if psi_scores[i] >= 0.2 else "⚠️" if psi_scores[i] >= 0.1 else "✅"
+            ks_flag = "🔴" if ks_pvalues[i] < 0.05 else "✅"
+            feat_rows += (
+                f"| {feature_names[i][:20]} | `{psi_scores[i]:.4f}` {psi_flag} "
+                f"| `{ks_pvalues[i]:.4f}` {ks_flag} |\n"
+            )
 
         metrics_md = f"""
 ### Drift Detection Results
@@ -231,6 +271,12 @@ def run_mlops_demo(demo_type: str, drift_level: float, n_features_monitor: int):
 | Max PSI feature | `{max_psi_feat[:20]}` |
 
 **Recommendation:** {recommendation}
+
+### Per-Feature Drift Metrics
+
+| Feature | PSI | KS p-value |
+|---|---|---|
+{feat_rows}
 """
 
     elif demo_type == "Model Version Comparison":
@@ -283,6 +329,7 @@ def run_mlops_demo(demo_type: str, drift_level: float, n_features_monitor: int):
 
         fig.update_layout(height=380, showlegend=False, title_text="Model Version Comparison")
 
+        fig2 = None
         best = max(results, key=lambda r: r["acc"])
         metrics_md = f"""
 ### Model Version Registry
@@ -317,6 +364,7 @@ def run_mlops_demo(demo_type: str, drift_level: float, n_features_monitor: int):
         fig.update_layout(barmode="overlay", height=400,
                           title_text="Prediction Score Distribution Shift")
 
+        fig2 = None
         ks_stat, ks_p = scipy_stats.ks_2samp(probs_ref, probs_cur_drift)
         metrics_md = f"""
 ### Prediction Distribution Analysis
@@ -334,9 +382,10 @@ def run_mlops_demo(demo_type: str, drift_level: float, n_features_monitor: int):
 
     else:
         fig = go.Figure()
+        fig2 = None
         metrics_md = "Select a demo type."
 
-    return fig, metrics_md
+    return fig, fig2, metrics_md
 
 
 def build_tab():
@@ -365,10 +414,11 @@ def build_tab():
 
         with gr.Column(scale=2):
             plot_out    = gr.Plot(label="Result")
+            plot_dist   = gr.Plot(label="Distribution Overlay (Top 3 Drifted)", visible=True)
             metrics_out = gr.Markdown()
 
     run_btn.click(
         fn=run_mlops_demo,
         inputs=[demo_dd, drift_sl, feat_sl],
-        outputs=[plot_out, metrics_out]
+        outputs=[plot_out, plot_dist, metrics_out]
     )

@@ -13,7 +13,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import cross_val_score, StratifiedKFold
-from sklearn.metrics import roc_auc_score, roc_curve
+from sklearn.metrics import roc_auc_score, roc_curve, confusion_matrix, classification_report
 
 THEORY = """## 📖 Model Evaluation — Knowing If Your Model Is Actually Good
 
@@ -210,27 +210,44 @@ def run_evaluation(
         # --- ROC Curve branch ---
         if eval_type == "ROC Curve":
             if n_classes != 2:
-                # Politely explain the limitation
-                empty_fig = go.Figure()
-                empty_fig.add_annotation(
-                    text=(
-                        "ROC curve requires binary classification.<br>"
-                        "Please select the <b>breast_cancer</b> dataset<br>"
-                        "(2 classes: malignant / benign)."
-                    ),
-                    xref="paper", yref="paper",
-                    x=0.5, y=0.5, showarrow=False,
-                    font=dict(size=16),
-                    align="center",
+                # Multiclass: show confusion matrix instead of empty space
+                from sklearn.model_selection import train_test_split
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X, y, test_size=0.2, random_state=42, stratify=y
                 )
-                empty_fig.update_layout(template="plotly_white", height=400)
+                from sklearn.preprocessing import StandardScaler
+                sc = StandardScaler()
+                X_train = sc.fit_transform(X_train)
+                X_test = sc.transform(X_test)
+
+                model = _build_model(algorithm)
+                model.fit(X_train, y_train)
+                y_pred = model.predict(X_test)
+                cm = confusion_matrix(y_test, y_pred)
+                class_names = [str(t) for t in target_names]
+
+                fig = go.Figure(go.Heatmap(
+                    z=cm[::-1], x=class_names, y=class_names[::-1],
+                    text=cm[::-1], texttemplate="%{text}",
+                    colorscale="Blues", showscale=False
+                ))
+                fig.update_layout(
+                    title=f"Confusion Matrix — {algorithm} on {dataset_name} (ROC needs binary data)",
+                    xaxis_title="Predicted", yaxis_title="Actual",
+                    template="plotly_white", height=400
+                )
+                from sklearn.metrics import accuracy_score
+                acc = accuracy_score(y_test, y_pred)
                 msg = (
-                    "### ROC Curve — Not Available\n\n"
-                    "ROC curve is for **binary classification**. "
-                    f"The `{dataset_name}` dataset has **{n_classes} classes**.\n\n"
-                    "Select the **`breast_cancer`** dataset to plot the ROC curve."
+                    f"### Confusion Matrix — {algorithm} on `{dataset_name}`\n\n"
+                    f"ROC curve requires binary classification, but `{dataset_name}` has **{n_classes} classes**.\n"
+                    f"Showing confusion matrix instead.\n\n"
+                    f"| Metric | Value |\n|--------|-------|\n"
+                    f"| **Accuracy** | `{acc:.4f}` |\n"
+                    f"| **Test size** | `{len(X_test)}` samples |\n\n"
+                    "> Select **breast_cancer** for the ROC curve (binary classification)."
                 )
-                return empty_fig, msg
+                return fig, msg
 
             # Binary ROC
             X_train, X_test, y_train, y_test, _ = split_and_scale(

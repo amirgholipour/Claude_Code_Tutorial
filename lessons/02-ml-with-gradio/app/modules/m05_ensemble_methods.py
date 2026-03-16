@@ -3,298 +3,301 @@ Level: Intermediate"""
 import gradio as gr
 import numpy as np
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import plotly.express as px
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from utils.data_utils import load_dataset, split_and_scale
-from utils.plot_utils import confusion_matrix_heatmap, feature_importance_bar
-from config import COLORS
 
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, AdaBoostClassifier
+from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import accuracy_score, confusion_matrix
+from sklearn.datasets import load_iris, load_wine, load_breast_cancer
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 
 THEORY = """## 🌲 Ensemble Methods
 
-Ensemble methods combine multiple "weak learners" into a single strong model. The core insight:
-**a crowd of mediocre models, when combined wisely, outperforms any single model.**
-
----
+Ensemble methods combine multiple "weak learners" into a single strong model.
+**A crowd of mediocre models, combined wisely, outperforms any single model.**
 
 ### Bagging (Bootstrap Aggregating)
-
-Bagging trains many models **in parallel**, each on a different random bootstrap sample of the data.
-Predictions are combined by majority vote (classification) or averaging (regression).
-
+Train many models **in parallel** on random bootstrap samples. Combine by majority vote.
 - **Goal:** Reduce variance — individual trees overfit, but their average does not.
-- **Random Forest** = Decision Trees + Bagging + **Feature Randomness**
-  - At each split, only a random subset of features is considered (`max_features`)
-  - This decorrelates the trees, making the ensemble more powerful than pure bagging
-
----
+- **Random Forest** = Decision Trees + Bagging + Feature Randomness
+  - Each split considers only a random feature subset → decorrelates trees
 
 ### Boosting
-
-Boosting trains models **sequentially**. Each new model focuses on the mistakes of the previous one.
-
-- **Goal:** Reduce bias — iteratively correct errors to build a highly accurate model.
-- **AdaBoost**: Re-weights misclassified samples so the next tree focuses on them.
-- **Gradient Boosting**: Fits each new tree to the **residual errors** (gradients) of the ensemble so far.
-  - `learning_rate` controls how much each tree contributes (shrinkage). Lower = more trees needed but better generalization.
-
----
+Train models **sequentially**. Each new model focuses on previous mistakes.
+- **Goal:** Reduce bias — iteratively correct errors.
+- **AdaBoost**: Re-weights misclassified samples for the next tree
+- **Gradient Boosting**: Fits each new tree to the **residual errors** (gradients)
+  - `learning_rate` controls contribution of each tree (shrinkage)
 
 ### Bagging vs Boosting
 
-| Property | Bagging (Random Forest) | Boosting (GB, AdaBoost) |
-|----------|------------------------|------------------------|
+| Property | Bagging (RF) | Boosting (GB, AdaBoost) |
+|----------|-------------|------------------------|
 | Training | Parallel | Sequential |
 | Goal | Reduce variance | Reduce bias |
-| Overfitting risk | Low | Higher (can overfit noisy data) |
+| Overfitting | Low risk | Higher risk |
 | Speed | Fast | Slower |
-| Noise sensitivity | Robust | Sensitive |
 | Typical accuracy | High | Often higher |
-
----
 
 ### Key Hyperparameters
 
-| Parameter | Applies to | Effect |
-|-----------|-----------|--------|
-| `n_estimators` | All | More trees = better + slower. Diminishing returns after ~100–200. |
-| `max_depth` | RF, GB | Controls tree complexity. Deeper = more variance. |
-| `learning_rate` | GB, AdaBoost | Step size for each tree's contribution. Lower = needs more trees. |
-| `max_features` | Random Forest | Features sampled per split. `sqrt` is default for classification. |
-
-> **Rule of thumb:** For Gradient Boosting, use a low `learning_rate` (0.05–0.1) with a high `n_estimators`.
-> Use early stopping to find the optimal number automatically.
+| Parameter | Effect |
+|-----------|--------|
+| `n_estimators` | More trees = better + slower. Diminishing returns after ~100–200. |
+| `max_depth` | Controls tree complexity. Deeper = more variance. |
+| `learning_rate` | Step size per tree (boosting only). Lower = needs more trees. |
 """
 
-CODE_EXAMPLE = '''from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, AdaBoostClassifier
+CODE_EXAMPLE = '''from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.metrics import accuracy_score
-from sklearn.datasets import load_iris
-from sklearn.model_selection import train_test_split
-
-X, y = load_iris(return_X_y=True)
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
 # Random Forest — bagging + feature randomness
 rf = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
 rf.fit(X_train, y_train)
-print(f"Random Forest:      {accuracy_score(y_test, rf.predict(X_test)):.4f}")
+print(f"RF: {accuracy_score(y_test, rf.predict(X_test)):.4f}")
 
 # Gradient Boosting — sequential residual fitting
 gb = GradientBoostingClassifier(n_estimators=100, learning_rate=0.1, max_depth=3)
 gb.fit(X_train, y_train)
-print(f"Gradient Boosting:  {accuracy_score(y_test, gb.predict(X_test)):.4f}")
+print(f"GB: {accuracy_score(y_test, gb.predict(X_test)):.4f}")
 
-# AdaBoost — sequential re-weighting of misclassified samples
-ada = AdaBoostClassifier(n_estimators=100, learning_rate=1.0, random_state=42)
-ada.fit(X_train, y_train)
-print(f"AdaBoost:           {accuracy_score(y_test, ada.predict(X_test)):.4f}")
-
-# Feature importances from Random Forest
-for name, imp in zip(load_iris().feature_names, rf.feature_importances_):
-    print(f"  {name}: {imp:.4f}")
+# Boosting learning curve (error vs rounds)
+from sklearn.metrics import log_loss
+staged_scores = []
+for i, y_pred in enumerate(gb.staged_predict(X_test)):
+    staged_scores.append(accuracy_score(y_test, y_pred))
+# staged_scores[i] = accuracy using first (i+1) trees
 '''
 
 
-def run_ensemble(dataset_name, algorithm, n_estimators, max_depth, learning_rate, test_size):
-    """Train ensemble model(s) and return a plot + metrics markdown."""
-    try:
-        X, y, feature_names, target_names = load_dataset(dataset_name)
-        X_train, X_test, y_train, y_test, _ = split_and_scale(
-            X, y, test_size=test_size, scale=None
-        )
+def _load(name):
+    loaders = {"Iris": load_iris, "Wine": load_wine, "Breast Cancer": load_breast_cancer}
+    d = loaders[name]()
+    return d.data, d.target, list(d.feature_names), [str(t) for t in d.target_names]
 
-        n_estimators = int(n_estimators)
-        max_depth = int(max_depth)
+
+def run_ensemble(dataset_name, algorithm, n_estimators, max_depth, learning_rate, test_size):
+    try:
+        X, y, feat_names, class_names = _load(dataset_name)
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, random_state=42, stratify=y
+        )
+        n_est = int(n_estimators)
+        md = int(max_depth)
 
         def make_rf():
-            return RandomForestClassifier(
-                n_estimators=n_estimators, max_depth=max_depth, random_state=42, n_jobs=-1
-            )
+            return RandomForestClassifier(n_estimators=n_est, max_depth=md, random_state=42)
 
         def make_gb():
             return GradientBoostingClassifier(
-                n_estimators=n_estimators, learning_rate=learning_rate,
-                max_depth=max(1, max_depth - 2), random_state=42
+                n_estimators=n_est, learning_rate=learning_rate,
+                max_depth=max(1, md - 2), random_state=42
             )
 
         def make_ada():
-            return AdaBoostClassifier(
-                n_estimators=n_estimators, learning_rate=learning_rate, random_state=42
-            )
+            return AdaBoostClassifier(n_estimators=n_est, learning_rate=learning_rate, random_state=42)
 
         if algorithm == "Compare All":
-            models = {
-                "Random Forest": make_rf(),
-                "Gradient Boosting": make_gb(),
-                "AdaBoost": make_ada(),
-            }
-            accuracies = {}
-            rf_model = None
-            for name, model in models.items():
-                model.fit(X_train, y_train)
-                accuracies[name] = accuracy_score(y_test, model.predict(X_test))
-                if name == "Random Forest":
-                    rf_model = model
+            return _compare_all(make_rf, make_gb, make_ada, X_train, X_test,
+                                y_train, y_test, feat_names, class_names, dataset_name, n_est)
+        else:
+            makers = {"Random Forest": make_rf, "Gradient Boosting": make_gb, "AdaBoost": make_ada}
+            model = makers[algorithm]()
+            return _single_model(model, algorithm, X_train, X_test, y_train, y_test,
+                                 feat_names, class_names, dataset_name)
 
-            # Bar chart comparing accuracies
-            names_list = list(accuracies.keys())
-            acc_list = list(accuracies.values())
-            colors = [COLORS["primary"], COLORS["success"], COLORS["warning"]]
-            fig = go.Figure(go.Bar(
-                x=names_list,
-                y=acc_list,
-                marker_color=colors,
-                text=[f"{a:.4f}" for a in acc_list],
-                textposition="outside",
-            ))
-            fig.update_layout(
-                title=f"Ensemble Accuracy Comparison — {dataset_name}",
-                xaxis_title="Algorithm",
-                yaxis_title="Test Accuracy",
-                yaxis=dict(range=[0, 1.05]),
-                template="plotly_white",
-                height=420,
-            )
+    except Exception as e:
+        import traceback
+        empty = go.Figure().update_layout(template="plotly_white", height=420)
+        return empty, empty, f"**Error:** {traceback.format_exc()}"
 
-            best_name = max(accuracies, key=accuracies.get)
-            metrics_md = f"""### Compare All — `{dataset_name}`
+
+def _compare_all(make_rf, make_gb, make_ada, X_train, X_test, y_train, y_test,
+                 feat_names, class_names, dataset_name, n_est):
+    """Compare all 3 methods: accuracy bars + boosting learning curve."""
+    models = {
+        "Random Forest": make_rf(),
+        "Gradient Boosting": make_gb(),
+        "AdaBoost": make_ada(),
+    }
+    accs = {}
+    for name, model in models.items():
+        model.fit(X_train, y_train)
+        accs[name] = accuracy_score(y_test, model.predict(X_test))
+
+    # Boosting learning curve (staged_predict from GBT)
+    gb_model = models["Gradient Boosting"]
+    staged_accs = [accuracy_score(y_test, p) for p in gb_model.staged_predict(X_test)]
+
+    # Figure 1: Accuracy comparison + boosting curve
+    fig1 = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=["Test Accuracy Comparison", "Gradient Boosting: Accuracy vs Rounds"],
+        column_widths=[0.4, 0.6]
+    )
+
+    colors = {"Random Forest": "#42a5f5", "Gradient Boosting": "#66bb6a", "AdaBoost": "#ff9800"}
+    names = list(accs.keys())
+    fig1.add_trace(go.Bar(
+        x=names, y=[accs[n] for n in names],
+        marker_color=[colors[n] for n in names],
+        text=[f"{accs[n]:.4f}" for n in names], textposition="outside",
+        showlegend=False
+    ), row=1, col=1)
+    fig1.update_yaxes(range=[0, 1.05], title_text="Accuracy", row=1, col=1)
+
+    rounds = list(range(1, len(staged_accs) + 1))
+    fig1.add_trace(go.Scatter(
+        x=rounds, y=staged_accs, mode="lines",
+        name="GB Accuracy", line=dict(color="#66bb6a", width=2), showlegend=False
+    ), row=1, col=2)
+    fig1.update_xaxes(title_text="Number of Trees", row=1, col=2)
+    fig1.update_yaxes(title_text="Test Accuracy", row=1, col=2)
+
+    fig1.update_layout(title=f"Ensemble Comparison — {dataset_name}",
+                       template="plotly_white", height=420)
+
+    # Figure 2: Feature importance from RF
+    rf = models["Random Forest"]
+    imp = rf.feature_importances_
+    order = np.argsort(imp)
+    fig2 = go.Figure(go.Bar(
+        x=imp[order], y=[feat_names[i][:20] for i in order],
+        orientation="h", marker_color="#42a5f5"
+    ))
+    fig2.update_layout(title="Random Forest — Feature Importances",
+                       template="plotly_white", height=max(300, len(feat_names) * 22))
+
+    best = max(accs, key=accs.get)
+    md_text = f"""### Compare All — {dataset_name}
 
 | Algorithm | Test Accuracy |
 |-----------|--------------|
-| Random Forest | **{accuracies['Random Forest']:.4f}** |
-| Gradient Boosting | **{accuracies['Gradient Boosting']:.4f}** |
-| AdaBoost | **{accuracies['AdaBoost']:.4f}** |
+| Random Forest | `{accs['Random Forest']:.4f}` |
+| Gradient Boosting | `{accs['Gradient Boosting']:.4f}` |
+| AdaBoost | `{accs['AdaBoost']:.4f}` |
 
-**Best model:** {best_name} ({accuracies[best_name]:.4f})
+**Best:** {best} ({accs[best]:.4f})
 
-> Feature importances shown are from the **Random Forest** model.
+> **Boosting curve** (right panel) shows how Gradient Boosting accuracy improves as trees are added sequentially.
+> Each tree corrects the errors of the previous ones — this is the core idea of boosting.
+> The curve typically rises quickly then plateaus; adding too many trees can lead to overfitting.
 """
-            # Append feature importance below — but gr.Plot takes one figure.
-            # Return the comparison bar chart; feature importance shown in metrics text.
-            if rf_model is not None:
-                top_idx = np.argsort(rf_model.feature_importances_)[::-1][:8]
-                imp_lines = "\n".join(
-                    f"| `{feature_names[i][:25]}` | {rf_model.feature_importances_[i]:.4f} |"
-                    for i in top_idx
-                )
-                metrics_md += f"\n### Top Feature Importances (Random Forest)\n| Feature | Importance |\n|---------|------------|\n{imp_lines}\n"
+    return fig1, fig2, md_text
 
-            return fig, metrics_md
 
-        else:
-            # Single algorithm
-            if algorithm == "Random Forest":
-                model = make_rf()
-            elif algorithm == "Gradient Boosting":
-                model = make_gb()
-            else:
-                model = make_ada()
+def _single_model(model, algorithm, X_train, X_test, y_train, y_test,
+                   feat_names, class_names, dataset_name):
+    """Train single model: confusion matrix + feature importance / boosting curve."""
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    acc = accuracy_score(y_test, y_pred)
+    cm = confusion_matrix(y_test, y_pred)
 
-            model.fit(X_train, y_train)
-            y_pred = model.predict(X_test)
-            acc = accuracy_score(y_test, y_pred)
-            cm = confusion_matrix(y_test, y_pred)
+    # Figure 1: Confusion matrix heatmap + feature importance (or boosting curve)
+    has_staged = hasattr(model, 'staged_predict')
+    has_importance = hasattr(model, 'feature_importances_')
 
-            # Choose between confusion matrix or feature importance based on space.
-            # Show feature importance as main plot (more informative for ensembles).
-            if hasattr(model, "feature_importances_"):
-                importances = model.feature_importances_
-                fig = feature_importance_bar(
-                    feature_names, importances,
-                    title=f"{algorithm} — Feature Importances ({dataset_name})"
-                )
-            else:
-                # Fallback: confusion matrix
-                fig = confusion_matrix_heatmap(
-                    cm, list(target_names),
-                    title=f"{algorithm} — Confusion Matrix ({dataset_name})"
-                )
+    if has_staged:
+        # Boosting: CM + learning curve
+        staged_accs = [accuracy_score(y_test, p) for p in model.staged_predict(X_test)]
+        fig1 = make_subplots(
+            rows=1, cols=2,
+            subplot_titles=["Confusion Matrix", f"{algorithm}: Accuracy vs Rounds"],
+            column_widths=[0.45, 0.55]
+        )
+        # CM heatmap
+        fig1.add_trace(go.Heatmap(
+            z=cm[::-1], x=class_names, y=class_names[::-1],
+            text=cm[::-1], texttemplate="%{text}",
+            colorscale="Blues", showscale=False
+        ), row=1, col=1)
+        fig1.update_xaxes(title_text="Predicted", row=1, col=1)
+        fig1.update_yaxes(title_text="Actual", row=1, col=1)
 
-            n_train, n_test = len(y_train), len(y_test)
-            params_md = ""
-            if algorithm == "Gradient Boosting":
-                params_md = f"learning_rate = {learning_rate}"
-            elif algorithm == "AdaBoost":
-                params_md = f"learning_rate = {learning_rate}"
+        rounds = list(range(1, len(staged_accs) + 1))
+        fig1.add_trace(go.Scatter(
+            x=rounds, y=staged_accs, mode="lines",
+            line=dict(color="#66bb6a", width=2), showlegend=False
+        ), row=1, col=2)
+        fig1.update_xaxes(title_text="Number of Trees", row=1, col=2)
+        fig1.update_yaxes(title_text="Test Accuracy", row=1, col=2)
+    else:
+        # RF: just confusion matrix
+        fig1 = go.Figure(go.Heatmap(
+            z=cm[::-1], x=class_names, y=class_names[::-1],
+            text=cm[::-1], texttemplate="%{text}",
+            colorscale="Blues", showscale=False
+        ))
+        fig1.update_layout(xaxis_title="Predicted", yaxis_title="Actual")
 
-            metrics_md = f"""### {algorithm} — `{dataset_name}`
+    fig1.update_layout(title=f"{algorithm} — {dataset_name}",
+                       template="plotly_white", height=420)
+
+    # Figure 2: Feature importance
+    if has_importance:
+        imp = model.feature_importances_
+        order = np.argsort(imp)
+        fig2 = go.Figure(go.Bar(
+            x=imp[order], y=[feat_names[i][:20] for i in order],
+            orientation="h", marker_color="#42a5f5"
+        ))
+        fig2.update_layout(title=f"{algorithm} — Feature Importances",
+                           template="plotly_white", height=max(300, len(feat_names) * 22))
+    else:
+        fig2 = go.Figure().update_layout(template="plotly_white", height=300)
+
+    md_text = f"""### {algorithm} — {dataset_name}
 
 | Metric | Value |
 |--------|-------|
-| Test Accuracy | **{acc:.4f}** |
-| Train samples | {n_train} |
-| Test samples | {n_test} |
-| n_estimators | {n_estimators} |
-| max_depth | {max_depth} |
-{"| " + params_md.replace(" = ", " | ") + " |" if params_md else ""}
-
-### Confusion Matrix
+| **Test Accuracy** | `{acc:.4f}` |
+| **Train Accuracy** | `{accuracy_score(y_train, model.predict(X_train)):.4f}` |
+| **Train / Test** | {len(y_train)} / {len(y_test)} |
 """
-            # Append confusion matrix values
-            for i, row in enumerate(cm):
-                label = target_names[i] if i < len(target_names) else f"Class {i}"
-                metrics_md += f"- **{label}**: {dict(zip([str(target_names[j]) for j in range(len(row))], row.tolist()))}\n"
-
-            return fig, metrics_md
-
-    except Exception as e:
-        empty_fig = go.Figure()
-        empty_fig.update_layout(template="plotly_white", height=420)
-        return empty_fig, f"**Error:** {str(e)}"
+    return fig1, fig2, md_text
 
 
 def build_tab():
-    """Build the Gradio UI for the Ensemble Methods module."""
-    with gr.Column():
-        with gr.Accordion("📖 Theory", open=False):
-            gr.Markdown(THEORY)
+    gr.Markdown("# 🌲 Module 05 — Ensemble Methods\n*Level: Intermediate*")
 
-        with gr.Accordion("💻 Code Example", open=False):
-            gr.Code(CODE_EXAMPLE, language="python")
+    with gr.Accordion("📖 Theory", open=False):
+        gr.Markdown(THEORY)
+    with gr.Accordion("💻 Code Example", open=False):
+        gr.Code(CODE_EXAMPLE, language="python")
 
-        gr.Markdown("### 🔬 Interactive Demo")
+    gr.Markdown("""---
+## 🎮 Interactive Demo
 
-        with gr.Row():
-            with gr.Column(scale=1):
-                dataset_dd = gr.Dropdown(
-                    choices=["iris", "wine", "breast_cancer"],
-                    value="iris",
-                    label="Dataset",
-                )
-                algorithm_radio = gr.Radio(
-                    choices=["Random Forest", "Gradient Boosting", "AdaBoost", "Compare All"],
-                    value="Random Forest",
-                    label="Algorithm",
-                )
-                n_estimators_sl = gr.Slider(
-                    minimum=10, maximum=200, value=100, step=10,
-                    label="n_estimators",
-                )
-                max_depth_sl = gr.Slider(
-                    minimum=1, maximum=10, value=5, step=1,
-                    label="max_depth",
-                )
-                learning_rate_sl = gr.Slider(
-                    minimum=0.01, maximum=0.5, value=0.1, step=0.01,
-                    label="learning_rate (Gradient Boosting / AdaBoost)",
-                )
-                test_size_sl = gr.Slider(
-                    minimum=0.1, maximum=0.4, value=0.2, step=0.05,
-                    label="Test Size",
-                )
-                run_btn = gr.Button("▶ Run", variant="primary")
+Try **Compare All** to see all 3 methods head-to-head with a boosting learning curve.""")
 
-            with gr.Column(scale=3):
-                plot_out = gr.Plot(label="Results")
-                metrics_out = gr.Markdown(label="Metrics")
+    with gr.Row():
+        with gr.Column(scale=1):
+            dataset_dd = gr.Dropdown(
+                label="Dataset", choices=["Iris", "Wine", "Breast Cancer"], value="Iris"
+            )
+            algo_dd = gr.Dropdown(
+                label="Algorithm",
+                choices=["Compare All", "Random Forest", "Gradient Boosting", "AdaBoost"],
+                value="Compare All"
+            )
+            n_est_sl = gr.Slider(10, 200, value=100, step=10, label="n_estimators")
+            depth_sl = gr.Slider(1, 10, value=5, step=1, label="max_depth")
+            lr_sl = gr.Slider(0.01, 0.5, value=0.1, step=0.01, label="learning_rate (boosting)")
+            test_sl = gr.Slider(0.1, 0.4, value=0.2, step=0.05, label="Test Size")
+            run_btn = gr.Button("▶ Run", variant="primary")
 
-        run_btn.click(
-            fn=run_ensemble,
-            inputs=[dataset_dd, algorithm_radio, n_estimators_sl,
-                    max_depth_sl, learning_rate_sl, test_size_sl],
-            outputs=[plot_out, metrics_out],
-        )
+        with gr.Column(scale=3):
+            plot1 = gr.Plot(label="Main Results")
+            plot2 = gr.Plot(label="Feature Importances")
+            metrics_out = gr.Markdown()
 
-    return plot_out, metrics_out
+    run_btn.click(
+        fn=run_ensemble,
+        inputs=[dataset_dd, algo_dd, n_est_sl, depth_sl, lr_sl, test_sl],
+        outputs=[plot1, plot2, metrics_out]
+    )

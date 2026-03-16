@@ -261,6 +261,13 @@ def run_anomaly_detection(dataset_type: str, method: str, contamination: float,
                                marker_color="#ef5350", opacity=0.6,
                                histnorm="probability"), row=1, col=2)
 
+    # Add threshold line on score distribution
+    if len(scores_normal) > 0 and len(scores_anom) > 0:
+        # Approximate threshold: midpoint between normal and anomaly score peaks
+        threshold_approx = 0.5 * (np.percentile(scores_normal, 90) + np.percentile(scores_anom, 10))
+        fig.add_vline(x=threshold_approx, line_dash="dash", line_color="gray",
+                      annotation_text="Threshold", row=1, col=2)
+
     fig.update_layout(height=450, barmode="overlay",
                       title_text=f"Anomaly Detection — {method} on {dataset_type}")
 

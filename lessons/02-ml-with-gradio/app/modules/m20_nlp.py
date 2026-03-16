@@ -12,6 +12,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from collections import Counter
 import re
+import random
 
 from sklearn.datasets import fetch_20newsgroups
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
@@ -23,82 +24,65 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 
 THEORY = """
-## 📖 What Is NLP?
+## What Is NLP?
 
-**Natural Language Processing (NLP)** is the field of enabling machines to understand, interpret, and generate human language. It sits at the intersection of linguistics, computer science, and machine learning.
+**Natural Language Processing (NLP)** enables machines to understand, interpret,
+and generate human language.  It powers search engines, spam filters, sentiment
+analysis, chatbots, and more.
 
-NLP powers: search engines, spam filters, sentiment analysis, chatbots, translation, summarization.
+## The Classical NLP Pipeline
 
-## 🏗️ NLP Pipeline
+This module covers the classical NLP pipeline:
 
 ```
-Raw Text → Preprocessing → Representation → Model → Output
+Raw Text  →  Preprocessing  →  TF-IDF Vectorization  →  Classification
 ```
 
 ### 1. Text Preprocessing
 ```python
 # Lowercasing
 text = text.lower()
-# Remove punctuation/special chars
+# Remove punctuation / special chars
 text = re.sub(r"[^a-z0-9 ]", "", text)
 # Tokenization (split into words)
 tokens = text.split()
 # Remove stopwords (common words with little meaning)
 stopwords = {"the", "a", "is", "in", "it", "and", "or", "to", ...}
 tokens = [t for t in tokens if t not in stopwords]
-# Stemming: "running" → "run" (crude, suffix stripping)
-# Lemmatization: "better" → "good" (vocabulary-based, more accurate)
 ```
 
-### 2. Text Representation
+### 2. TF-IDF Representation
 
-#### Bag of Words (BoW)
-Count how many times each word appears in a document. Ignores order.
-```
-["I love cats", "I love dogs"]
-→ {"i": [1,1], "love": [1,1], "cats": [1,0], "dogs": [0,1]}
-```
+**TF-IDF (Term Frequency — Inverse Document Frequency)** weights terms by how
+important they are to a document relative to the entire corpus:
 
-#### TF-IDF (Term Frequency — Inverse Document Frequency)
-Weights terms by how important they are to a document relative to the corpus:
 ```
 TF(w, d) = count(w in d) / total_words(d)
-IDF(w)   = log(N / df(w))    # df = documents containing w
+IDF(w)   = log(N / df(w))       # df = number of documents containing w
 TF-IDF   = TF × IDF
 ```
-**Key insight**: Common words (the, a, is) get low IDF; rare discriminative words get high score.
 
-#### Word Embeddings (Word2Vec, GloVe, FastText)
-Dense vectors where similar words are close in space:
-```
-king - man + woman ≈ queen
-```
-More powerful than BoW/TF-IDF — captures semantic meaning.
+**Key insight**: Common words (the, a, is) get low IDF; rare, discriminative
+words get a high score.  This makes TF-IDF a strong baseline representation
+for many text classification tasks.
 
-#### Transformers (BERT, GPT)
-Context-aware embeddings — same word gets different vector based on surrounding words.
+### 3. Classifiers Used in This Demo
 
-### 3. Classic NLP Models
 | Model | Strengths | Weaknesses |
 |---|---|---|
 | Naive Bayes | Fast, works with small data | Assumes feature independence |
 | Logistic Regression + TF-IDF | Interpretable, strong baseline | Linear decision boundary |
 | Linear SVM | High accuracy for text | No probability output |
-| Random Forest | Handles interactions | Slow on high-dimensional text |
 
-## ✅ Text Classification Workflow
-1. Load and explore data
-2. Preprocess text (lowercase, clean, tokenize)
-3. Vectorize (TF-IDF or BoW)
-4. Train classifier
-5. Evaluate (accuracy, F1, confusion matrix)
-6. Inspect misclassified examples
+### 4. Evaluation
 
-## ⚠️ Common Pitfalls
-- **Vocabulary leakage**: Fitting vectorizer on full dataset → fit on train only
-- **Ignoring class imbalance**: Macro F1 is more informative than accuracy for imbalanced classes
-- **Stopword removal**: Domain-specific stopwords matter (e.g., "not" is crucial for sentiment)
-- **Short texts**: Bag-of-words fails on very short texts (tweets, titles)
+We measure **precision**, **recall**, and **F1-score** per class, plus overall
+accuracy.  The confusion matrix shows where the classifier confuses categories.
+
+## Common Pitfalls
+- **Vocabulary leakage**: Fitting the vectorizer on the full dataset — always fit on training data only.
+- **Ignoring class imbalance**: Macro F1 is more informative than accuracy for imbalanced classes.
+- **Stopword removal**: Domain-specific stopwords matter (e.g., "not" is crucial for sentiment).
 """
 
 CODE_EXAMPLE = '''
@@ -157,6 +141,113 @@ def _clean_text(text: str) -> str:
     return " ".join(tokens)
 
 
+# ---------------------------------------------------------------------------
+# Synthetic fallback dataset
+# ---------------------------------------------------------------------------
+_SYNTHETIC_TEMPLATES = {
+    "sports": [
+        "The {team} won the {sport} championship this season",
+        "A great goal was scored during the {sport} match",
+        "The coach announced new players for the {team} roster",
+        "Fans celebrated the victory of {team} in the finals",
+        "The {sport} league released the schedule for next season",
+        "The star player signed a contract extension with {team}",
+        "Training camp for {sport} starts next week",
+        "The referee made a controversial call in the {sport} game",
+        "The {team} defeated their rivals in overtime",
+        "Injury report released for the {sport} playoffs",
+    ],
+    "technology": [
+        "The new {device} was released with improved {feature}",
+        "Engineers developed a faster {component} for data centers",
+        "The software update fixes critical {feature} bugs",
+        "A startup raised funding to build {device} hardware",
+        "Cloud computing demand drives growth in {component} sales",
+        "The {device} benchmark shows major performance gains",
+        "Developers are adopting {feature} in their applications",
+        "The latest {component} chip uses less power than before",
+        "Tech company announces new {device} product line",
+        "Open source {feature} framework reaches version five",
+    ],
+    "politics": [
+        "The senator proposed a new {policy} bill in congress",
+        "Voters in {region} head to the polls for the election",
+        "The government announced changes to {policy} regulations",
+        "A debate on {policy} reform dominated the news cycle",
+        "The president signed an executive order on {policy}",
+        "Opposition party criticizes the new {policy} proposal",
+        "The committee held hearings on {policy} spending",
+        "Campaign fundraising broke records in {region}",
+        "Diplomats met to discuss international {policy} agreements",
+        "The governor of {region} vetoed the {policy} legislation",
+    ],
+    "science": [
+        "Researchers discovered a new {subject} phenomenon in the lab",
+        "A study published in Nature reveals {subject} insights",
+        "Scientists observed unusual {subject} patterns in the data",
+        "The {subject} experiment produced unexpected results",
+        "A new telescope detected {subject} signals from deep space",
+        "The research team won an award for {subject} breakthroughs",
+        "Funding for {subject} research increased this year",
+        "A peer reviewed paper challenges previous {subject} theories",
+        "Laboratory tests confirm the {subject} hypothesis",
+        "The conference featured talks on cutting edge {subject} methods",
+    ],
+}
+
+_FILL_WORDS = {
+    "team": ["Eagles", "Tigers", "Wolves", "Sharks", "Bears", "Hawks"],
+    "sport": ["hockey", "baseball", "basketball", "soccer", "football"],
+    "device": ["laptop", "smartphone", "tablet", "server", "workstation"],
+    "feature": ["battery", "processor", "display", "security", "networking"],
+    "component": ["GPU", "CPU", "memory", "storage", "motherboard"],
+    "policy": ["healthcare", "education", "immigration", "tax", "defense"],
+    "region": ["California", "Texas", "Florida", "Ohio", "Virginia"],
+    "subject": ["quantum", "biology", "chemistry", "astronomy", "genetics"],
+}
+
+
+def _generate_synthetic_dataset(n_per_category=250, seed=42):
+    """Generate a simple synthetic text classification dataset."""
+    rng = random.Random(seed)
+    categories = list(_SYNTHETIC_TEMPLATES.keys())
+    texts, labels, target_names = [], [], categories
+
+    for cat_idx, cat in enumerate(categories):
+        templates = _SYNTHETIC_TEMPLATES[cat]
+        for _ in range(n_per_category):
+            tmpl = rng.choice(templates)
+            filled = tmpl
+            for placeholder, options in _FILL_WORDS.items():
+                if "{" + placeholder + "}" in filled:
+                    filled = filled.replace("{" + placeholder + "}", rng.choice(options))
+            texts.append(filled)
+            labels.append(cat_idx)
+
+    # Shuffle
+    combined = list(zip(texts, labels))
+    rng.shuffle(combined)
+    texts, labels = zip(*combined)
+
+    # Split 80/20
+    split = int(0.8 * len(texts))
+
+    class _Bunch:
+        pass
+
+    train = _Bunch()
+    train.data = list(texts[:split])
+    train.target = np.array(labels[:split])
+    train.target_names = target_names
+
+    test = _Bunch()
+    test.data = list(texts[split:])
+    test.target = np.array(labels[split:])
+    test.target_names = target_names
+
+    return train, test, categories
+
+
 def _load_newsgroups(n_categories: int = 4):
     # Use 4 diverse topic categories
     categories = [
@@ -175,19 +266,26 @@ def _load_newsgroups(n_categories: int = 4):
             subset="test", categories=categories,
             remove=("headers", "footers", "quotes"), random_state=42
         )
-        return train_data, test_data, categories
+        return train_data, test_data, categories, False
     except Exception:
         # Fallback: synthetic data if download fails
-        return None, None, categories
+        train_data, test_data, synth_cats = _generate_synthetic_dataset()
+        return train_data, test_data, synth_cats, True
 
 
 def run_nlp_demo(demo_type: str, clf_name: str, max_features: int, n_categories: int):
-    train_data, test_data, categories = _load_newsgroups(n_categories)
+    train_data, test_data, categories, is_synthetic = _load_newsgroups(n_categories)
 
-    if train_data is None:
-        return go.Figure(), "❌ Could not load 20 Newsgroups dataset. Check internet connection."
-
-    cat_labels = [c.split(".")[-1] for c in categories[:n_categories]]
+    if is_synthetic:
+        cat_labels = categories[:n_categories]
+        fallback_warning = (
+            "\n\n> **Warning**: Using synthetic fallback dataset "
+            "(20 Newsgroups download failed — no internet?). "
+            "Results are for demonstration only.\n"
+        )
+    else:
+        cat_labels = [c.split(".")[-1] for c in categories[:n_categories]]
+        fallback_warning = ""
 
     if demo_type == "Text Classification":
         CLFS = {
@@ -207,16 +305,88 @@ def run_nlp_demo(demo_type: str, clf_name: str, max_features: int, n_categories:
         acc   = accuracy_score(test_data.target, preds)
         cm    = confusion_matrix(test_data.target, preds)
 
-        fig = go.Figure(go.Heatmap(
+        report = classification_report(test_data.target, preds,
+                                       target_names=cat_labels, output_dict=True)
+
+        # Build a combined 3-row figure (Gradio gr.Plot accepts one figure)
+        from plotly.subplots import make_subplots as _ms
+
+        fig = _ms(rows=3, cols=1,
+                  subplot_titles=[f"Confusion Matrix — {clf_name}",
+                                  f"Per-Class Precision / Recall / F1 — {clf_name}",
+                                  "TF-IDF Heatmap: Top Terms per Category"],
+                  row_heights=[0.35, 0.30, 0.35],
+                  vertical_spacing=0.10)
+
+        # Row 1: Confusion matrix heatmap
+        fig.add_trace(go.Heatmap(
             z=cm, x=cat_labels, y=cat_labels,
             colorscale="Blues",
             text=cm, texttemplate="%{text}",
-            colorbar=dict(title="Count")
-        ))
-        fig.update_layout(height=420, title_text=f"Confusion Matrix — {clf_name}")
+            showscale=False,
+        ), row=1, col=1)
 
-        report = classification_report(test_data.target, preds,
-                                       target_names=cat_labels, output_dict=True)
+        # Row 2: Precision/Recall/F1 bars
+        precisions = [report[c]["precision"] for c in cat_labels]
+        recalls = [report[c]["recall"] for c in cat_labels]
+        f1s = [report[c]["f1-score"] for c in cat_labels]
+        fig.add_trace(go.Bar(name="Precision", x=cat_labels, y=precisions,
+                             marker_color="#42a5f5",
+                             text=[f"{v:.2f}" for v in precisions],
+                             textposition="outside"), row=2, col=1)
+        fig.add_trace(go.Bar(name="Recall", x=cat_labels, y=recalls,
+                             marker_color="#66bb6a",
+                             text=[f"{v:.2f}" for v in recalls],
+                             textposition="outside"), row=2, col=1)
+        fig.add_trace(go.Bar(name="F1-Score", x=cat_labels, y=f1s,
+                             marker_color="#ffa726",
+                             text=[f"{v:.2f}" for v in f1s],
+                             textposition="outside"), row=2, col=1)
+
+        # Row 3: TF-IDF heatmap
+        vect = TfidfVectorizer(max_features=max_features, stop_words="english", sublinear_tf=True)
+        X = vect.fit_transform(train_data.data)
+        vocab = np.array(vect.get_feature_names_out())
+        n_cats = len(cat_labels)
+        top_n = 8
+        top_terms_set = []
+        cat_term_scores = {}
+        for cat_idx, cat_name in enumerate(cat_labels):
+            mask = train_data.target == cat_idx
+            mean_tfidf = np.asarray(X[mask].mean(axis=0)).flatten()
+            top_idx = np.argsort(mean_tfidf)[-top_n:][::-1]
+            top_terms_set.extend(vocab[top_idx].tolist())
+            cat_term_scores[cat_name] = mean_tfidf
+
+        seen = set()
+        all_terms = []
+        for t in top_terms_set:
+            if t not in seen:
+                seen.add(t)
+                all_terms.append(t)
+
+        term_indices = [np.where(vocab == t)[0][0] for t in all_terms]
+        z_hm = np.zeros((n_cats, len(all_terms)))
+        for i, cat_name in enumerate(cat_labels):
+            for j, ti in enumerate(term_indices):
+                z_hm[i, j] = cat_term_scores[cat_name][ti]
+
+        fig.add_trace(go.Heatmap(
+            z=z_hm, x=all_terms, y=cat_labels,
+            colorscale="YlOrRd",
+            text=np.round(z_hm, 4), texttemplate="%{text:.3f}",
+            showscale=False,
+        ), row=3, col=1)
+
+        fig.update_layout(
+            height=1200,
+            barmode="group",
+            showlegend=True,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+        )
+        fig.update_yaxes(range=[0, 1.15], row=2, col=1)
+        fig.update_xaxes(tickangle=-45, row=3, col=1)
+
         rows = "\n".join([
             f"| {c} | {report[c]['precision']:.3f} | {report[c]['recall']:.3f} | {report[c]['f1-score']:.3f} | {int(report[c]['support'])} |"
             for c in cat_labels
@@ -230,8 +400,8 @@ def run_nlp_demo(demo_type: str, clf_name: str, max_features: int, n_categories:
 |---|---|---|---|---|
 {rows}
 
-> TF-IDF features: `{max_features}` | Dataset: 20 Newsgroups (subset)
-"""
+> TF-IDF features: `{max_features}` | Dataset: {"Synthetic fallback" if is_synthetic else "20 Newsgroups (subset)"}
+{fallback_warning}"""
 
     elif demo_type == "Top TF-IDF Words per Category":
         vect = TfidfVectorizer(max_features=max_features, stop_words="english", sublinear_tf=True)
@@ -267,8 +437,8 @@ Each bar shows the mean TF-IDF score across all documents in that category.
 **How to read:** A high mean TF-IDF means the word appears frequently in this category
 and rarely in others — it's a strong category signal.
 
-> Dataset: 20 Newsgroups | Categories: {', '.join(cat_labels[:n_cats])}
-"""
+> Dataset: {"Synthetic fallback" if is_synthetic else "20 Newsgroups"} | Categories: {', '.join(cat_labels[:n_cats])}
+{fallback_warning}"""
 
     elif demo_type == "Word Frequency Analysis":
         # Combine all training texts and compute word freq per category
@@ -300,7 +470,7 @@ and rarely in others — it's a strong category signal.
 | Top word | `{words[0]}` ({freqs[0]} occurrences) |
 
 > After stopword removal. These high-frequency words may need further domain-specific filtering.
-"""
+{fallback_warning}"""
 
     else:
         fig = go.Figure()
@@ -310,14 +480,14 @@ and rarely in others — it's a strong category signal.
 
 
 def build_tab():
-    gr.Markdown("# 📝 Module 20 — Natural Language Processing\n*Level: Intermediate*")
+    gr.Markdown("# Module 20 — Natural Language Processing\n*Level: Intermediate*")
 
-    with gr.Accordion("📖 Theory", open=False):
+    with gr.Accordion("Theory", open=False):
         gr.Markdown(THEORY)
-    with gr.Accordion("💻 Code Example", open=False):
+    with gr.Accordion("Code Example", open=False):
         gr.Code(CODE_EXAMPLE, language="python")
 
-    gr.Markdown("---\n## 🎮 Interactive Demo\n\nText classification on the 20 Newsgroups dataset. Compare NLP models and explore word importance.\n\n> **Note**: First run downloads the 20 Newsgroups dataset (~15 MB).")
+    gr.Markdown("---\n## Interactive Demo\n\nText classification on the 20 Newsgroups dataset. Compare NLP models and explore word importance.\n\n> **Note**: First run downloads the 20 Newsgroups dataset (~15 MB). If download fails, a synthetic fallback dataset is used.")
 
     with gr.Row():
         with gr.Column(scale=1):
@@ -336,7 +506,7 @@ def build_tab():
                                 step=1000, value=5000)
             cat_sl  = gr.Slider(label="Number of Categories", minimum=2, maximum=4,
                                 step=1, value=4)
-            run_btn = gr.Button("▶ Run NLP Demo", variant="primary")
+            run_btn = gr.Button("Run NLP Demo", variant="primary")
 
         with gr.Column(scale=2):
             plot_out    = gr.Plot(label="Result")

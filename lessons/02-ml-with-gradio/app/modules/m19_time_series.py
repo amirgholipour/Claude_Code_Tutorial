@@ -147,19 +147,61 @@ def _manual_decompose(series: pd.Series, period: int = 30):
 
 
 def _adf_test_simple(series: pd.Series):
-    """Simple ADF heuristic without statsmodels."""
+    """ADF test with critical value table lookup (no statsmodels).
+
+    Returns (t_stat, significance_result) where significance_result is a
+    string describing at which level the null hypothesis is rejected.
+    Uses standard Dickey-Fuller critical values:
+        1%: -3.43,  5%: -2.86,  10%: -2.57
+    """
     vals = series.dropna().values
     n    = len(vals)
     if n < 20:
         return None, None
-    diff = np.diff(vals)
+    diff   = np.diff(vals)
     lagged = vals[:-1]
-    cov  = np.cov(diff, lagged)
-    rho  = cov[0, 1] / (cov[1, 1] + 1e-8)
-    se   = np.std(diff) / (np.std(lagged) * np.sqrt(n) + 1e-8)
+    cov    = np.cov(diff, lagged)
+    rho    = cov[0, 1] / (cov[1, 1] + 1e-8)
+    se     = np.std(diff) / (np.std(lagged) * np.sqrt(n) + 1e-8)
     t_stat = rho / (se + 1e-8)
-    p_approx = 1 / (1 + np.exp(-0.3 * (t_stat + 2.86)))  # heuristic
-    return round(t_stat, 3), round(float(p_approx), 4)
+
+    # Critical value lookup
+    critical_values = {"1%": -3.43, "5%": -2.86, "10%": -2.57}
+    if t_stat < critical_values["1%"]:
+        sig = "Stationary at 1% significance level"
+    elif t_stat < critical_values["5%"]:
+        sig = "Stationary at 5% significance level"
+    elif t_stat < critical_values["10%"]:
+        sig = "Stationary at 10% significance level"
+    else:
+        sig = "Non-stationary (fail to reject unit root)"
+
+    return round(t_stat, 3), sig
+
+
+def _pacf(x, nlags):
+    """Proper PACF via Durbin-Levinson recursion."""
+    n = len(x)
+    x = x - x.mean()
+    acf_vals = np.correlate(x, x, mode='full')[n-1:]
+    acf_vals = acf_vals / acf_vals[0]
+
+    pacf_out = np.zeros(nlags + 1)
+    pacf_out[0] = 1.0
+    pacf_out[1] = acf_vals[1]
+
+    phi = np.zeros((nlags + 1, nlags + 1))
+    phi[1, 1] = acf_vals[1]
+
+    for k in range(2, nlags + 1):
+        num = acf_vals[k] - sum(phi[k-1, j] * acf_vals[k-j] for j in range(1, k))
+        den = 1.0 - sum(phi[k-1, j] * acf_vals[j] for j in range(1, k))
+        phi[k, k] = num / den if abs(den) > 1e-10 else 0.0
+        for j in range(1, k):
+            phi[k, j] = phi[k-1, j] - phi[k, k] * phi[k-1, k-j]
+        pacf_out[k] = phi[k, k]
+
+    return pacf_out
 
 
 def run_time_series(series_type: str, demo_type: str, horizon: int):
@@ -183,9 +225,10 @@ def run_time_series(series_type: str, demo_type: str, horizon: int):
                                      line=dict(color=color, width=1.5), name=name), row=row, col=1)
 
         fig.update_layout(height=600, showlegend=False,
-                          title_text=f"Time Series Decomposition — {series_type}")
+                          title_text=f"Moving Average Decomposition — {series_type}")
 
-        t_stat, p_adf = _adf_test_simple(series)
+        t_stat, adf_sig = _adf_test_simple(series)
+        is_stationary = adf_sig is not None and "Stationary at" in adf_sig
         metrics_md = f"""
 ### Decomposition Summary
 
@@ -196,7 +239,8 @@ def run_time_series(series_type: str, demo_type: str, horizon: int):
 | Seasonal | `{seasonal.mean():.3f}` | `{seasonal.std():.3f}` |
 | Residual | `{residual.dropna().mean():.3f}` | `{residual.dropna().std():.3f}` |
 
-**Stationarity (ADF heuristic):** t-stat ≈ `{t_stat}`, p ≈ `{p_adf}` → {'✅ Stationary' if p_adf and p_adf < 0.05 else '⚠️ Likely non-stationary — try differencing'}
+**Stationarity (ADF test):** t-stat = `{t_stat}` | Critical values: 1%: -3.43, 5%: -2.86, 10%: -2.57
+**Result:** {'✅ ' + adf_sig if is_stationary else '⚠️ ' + (adf_sig or 'Insufficient data') + ' — try differencing'}
 """
 
     elif demo_type == "Forecast (Naive Methods)":
@@ -269,7 +313,7 @@ def run_time_series(series_type: str, demo_type: str, horizon: int):
 
         fig = make_subplots(rows=2, cols=1,
                             subplot_titles=["ACF (AutoCorrelation Function)",
-                                            "Approximate PACF (partial correlation)"])
+                                            "PACF (Durbin-Levinson)"])
 
         lags = list(range(n_lags + 1))
         fig.add_trace(go.Bar(x=lags, y=acf_vals, name="ACF",
@@ -279,20 +323,14 @@ def run_time_series(series_type: str, demo_type: str, horizon: int):
                                      line=dict(color="red", dash="dash"),
                                      showlegend=False), row=1, col=1)
 
-        # PACF approx via sequential regression residuals
-        pacf_vals = [1.0]
-        residuals = vals.copy()
-        for lag in range(1, min(n_lags + 1, 21)):
-            y_lag = vals[lag:]
-            x_lag = vals[:-lag]
-            r     = np.corrcoef(y_lag, x_lag)[0, 1]
-            pacf_vals.append(float(r))
+        # PACF via Durbin-Levinson recursion
+        pacf_vals = _pacf(vals, n_lags)
 
-        fig.add_trace(go.Bar(x=list(range(len(pacf_vals))), y=pacf_vals, name="PACF",
+        fig.add_trace(go.Bar(x=lags, y=pacf_vals.tolist(), name="PACF",
                              marker_color="#66bb6a"), row=2, col=1)
         for sign in [1, -1]:
-            fig.add_trace(go.Scatter(x=list(range(len(pacf_vals))),
-                                     y=[sign * conf] * len(pacf_vals), mode="lines",
+            fig.add_trace(go.Scatter(x=lags,
+                                     y=[sign * conf] * len(lags), mode="lines",
                                      line=dict(color="red", dash="dash"),
                                      showlegend=False), row=2, col=1)
 
@@ -313,6 +351,72 @@ def run_time_series(series_type: str, demo_type: str, horizon: int):
 - **ACF cuts off at lag q**: MA(q) process
 - **PACF cuts off at lag p**: AR(p) process
 - **Both decline slowly**: Differencing needed (ARIMA d>0)
+"""
+
+    elif demo_type == "Stationarity Test":
+        # ADF test on original and differenced series
+        diff_series = series.diff().dropna()
+
+        t_stat_orig, adf_sig_orig = _adf_test_simple(series)
+        t_stat_diff, adf_sig_diff = _adf_test_simple(diff_series)
+
+        fig = make_subplots(rows=2, cols=2,
+                            subplot_titles=["Original Series", "Differenced Series",
+                                            "Distribution: Original vs Differenced", "Rolling Mean & Std"],
+                            vertical_spacing=0.14, horizontal_spacing=0.1)
+
+        # Row 1: time series plots
+        fig.add_trace(go.Scatter(x=series.index, y=series.values, mode="lines",
+                                 line=dict(color="#42a5f5", width=1.2), name="Original"),
+                      row=1, col=1)
+        fig.add_trace(go.Scatter(x=diff_series.index, y=diff_series.values, mode="lines",
+                                 line=dict(color="#66bb6a", width=1.2), name="Differenced"),
+                      row=1, col=2)
+
+        # Row 2 col 1: overlaid histograms showing distribution comparison
+        fig.add_trace(go.Histogram(x=series.values, name="Original",
+                                   marker_color="rgba(66,165,245,0.5)",
+                                   nbinsx=40, opacity=0.6),
+                      row=2, col=1)
+        fig.add_trace(go.Histogram(x=diff_series.values, name="Differenced",
+                                   marker_color="rgba(102,187,106,0.5)",
+                                   nbinsx=40, opacity=0.6),
+                      row=2, col=1)
+        fig.update_layout(barmode="overlay")
+
+        # Row 2 col 2: rolling statistics to visualize stationarity
+        window = 30
+        rolling_mean = series.rolling(window=window).mean()
+        rolling_std  = series.rolling(window=window).std()
+        fig.add_trace(go.Scatter(x=series.index, y=rolling_mean.values, mode="lines",
+                                 line=dict(color="#ef5350", width=2), name="Rolling Mean"),
+                      row=2, col=2)
+        fig.add_trace(go.Scatter(x=series.index, y=rolling_std.values, mode="lines",
+                                 line=dict(color="#ffa726", width=2), name="Rolling Std"),
+                      row=2, col=2)
+
+        fig.update_layout(height=600,
+                          title_text=f"Stationarity Test — {series_type}")
+
+        is_orig_stat = adf_sig_orig is not None and "Stationary at" in adf_sig_orig
+        is_diff_stat = adf_sig_diff is not None and "Stationary at" in adf_sig_diff
+        metrics_md = f"""
+### Stationarity Test Results
+
+**ADF Critical Values:** 1%: -3.43 | 5%: -2.86 | 10%: -2.57
+
+| Series | t-statistic | Result |
+|---|---|---|
+| Original | `{t_stat_orig}` | {'✅ ' + adf_sig_orig if is_orig_stat else '⚠️ ' + (adf_sig_orig or 'N/A')} |
+| Differenced | `{t_stat_diff}` | {'✅ ' + adf_sig_diff if is_diff_stat else '⚠️ ' + (adf_sig_diff or 'N/A')} |
+
+| Statistic | Original | Differenced |
+|---|---|---|
+| Mean | `{series.mean():.3f}` | `{diff_series.mean():.3f}` |
+| Std | `{series.std():.3f}` | `{diff_series.std():.3f}` |
+
+> The histogram overlay shows how differencing transforms the distribution.
+> A stationary series should have a roughly constant mean and variance (visible in the rolling stats plot).
 """
 
     else:
@@ -341,7 +445,7 @@ def build_tab():
             )
             demo_dd = gr.Dropdown(
                 label="Analysis Type",
-                choices=["Decomposition", "Forecast (Naive Methods)", "Autocorrelation (ACF/PACF)"],
+                choices=["Decomposition", "Stationarity Test", "Forecast (Naive Methods)", "Autocorrelation (ACF/PACF)"],
                 value="Decomposition"
             )
             horizon_sl = gr.Slider(label="Forecast Horizon (days)", minimum=7, maximum=90, step=7, value=30)
